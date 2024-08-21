@@ -1,0 +1,11 @@
+CETİN Muhasebe V1
+
+//sanal ortam oluşturma
+python3 -m venv myenv
+#oluşturduğunuz sanal ortamı şu komutla aktif hale getirin:
+source myenv/bin/activate
+#sanal ortam kapatma
+deactivate
+
+#exe yapma
+ python -m auto_py_to_exe

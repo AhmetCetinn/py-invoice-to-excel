@@ -1,0 +1,37 @@
+# Byte-compiled Python dosyaları
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sanal Ortamlar
+env/
+venv/
+ENV/
+.venv/
+.VENV/
+/myenv/
+
+# PyInstaller dosyaları
+/dist/
+/build/
+*.spec
+
+# Auto-py-to-exe
+output/
+
+# Sisteme Özel Dosyalar
+.DS_Store
+Thumbs.db
+
+# Log Dosyaları
+*.log
+
+# MacOS için .app dosyaları
+*.app
+
+# Windows için .exe dosyaları
+*.exe
+
+# PyInstaller için cache
+*.egg-info/
+*.eg
