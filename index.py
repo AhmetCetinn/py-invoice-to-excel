@@ -1,12 +1,14 @@
 import os
-import cv2
 import numpy as np
-from pyzbar.pyzbar import decode, ZBarSymbol
 from pdf2image import convert_from_path
 import pandas as pd
 import json
 from tkinter import Tk, Label, Button, Entry, filedialog, messagebox, StringVar
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
+import qreader
+from PIL import Image
+import cv2  # OpenCV ekleniyor
+import demjson3
 
 def select_pdf_folder():
     folder_selected = filedialog.askdirectory(title="PDF Klasörünü Seçin")
@@ -78,59 +80,93 @@ def start_gui():
 
     root.mainloop()
 
-def adaptive_binarization(image):
-    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    binarized_image = cv2.adaptiveThreshold(
-        gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY, 11, 2
-    )
-    return binarized_image
-
-def detect_qr_with_adaptive(image):
-    binarized_image = adaptive_binarization(image)
-    qr_codes = decode(binarized_image, symbols=[ZBarSymbol.QRCODE])
-    return qr_codes
-
 def extract_qr_from_pdf(pdf_path, output_folder):
-    pages = convert_from_path(pdf_path, 400)
+    pages = convert_from_path(pdf_path, 800)
     qr_data_list = []
     error_log_path = os.path.join(output_folder, "error-log.txt")
+    
+    # Klasör oluşturma
+    success_folder = os.path.join(output_folder, "success_qr")
+    failed_folder = os.path.join(output_folder, "failed_qr")
+    os.makedirs(success_folder, exist_ok=True)
+    os.makedirs(failed_folder, exist_ok=True)
+
+    reader = qreader.QReader()
 
     for page_num, page in enumerate(pages):
+        # Görüntüyü numpy dizisine dönüştür
         image = np.array(page)
-        qr_codes = detect_qr_with_adaptive(image)
+        
+        # OpenCV ile görüntüyü işleyelim
+        image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        
+        # QR tespiti
+        detection_result = reader.detect(image_bgr)
+        print('ajsndşklajdşasjşdlkasdas')
+        print(detection_result)
+        if detection_result and len(detection_result) > 0:
+            first_detection = detection_result[0]
+            decoded_result = reader.decode(image_bgr, first_detection)
+            if decoded_result:
+                qr_data_list.append(decoded_result)
+                print(f"QR Kod Bulundu (Sayfa {page_num + 1}): {decoded_result}")
 
-        if qr_codes:
-            for qr_code in qr_codes:
-                qr_data_list.append(qr_code.data.decode('utf-8'))
-                print(f"QR Kod Bulundu: Sayfa {page_num + 1}, Veri: {qr_code.data.decode('utf-8')}")
+                # QR kodun etrafına çerçeve çizmek için doğru nitelikleri bulalım
+                if 'bounding_box' in first_detection:
+                    points = np.array(first_detection['bounding_box']).reshape((-1, 1, 2)).astype(int)
+                    cv2.polylines(image_bgr, [points], isClosed=True, color=(0, 255, 0), thickness=3)
+
+                output_image_path = os.path.join(success_folder, f"{os.path.basename(pdf_path).replace('.pdf', '')}_page_{page_num + 1}.png")
+                cv2.imwrite(output_image_path, image_bgr)
+                print(f"Başarılı QR resmi kaydedildi: {output_image_path}")
+            else:
+                log_failed_qr(pdf_path, page_num, error_log_path, "QR kod çözümleme başarısız")
         else:
-            with open(error_log_path, 'a') as log_file:
-                log_file.write(f"{os.path.basename(pdf_path)} - Sayfa {page_num + 1}: QR kod bulunamadı.\n")
-            print(f"QR kod bulunamadı: Sayfa {page_num + 1}")
+            log_failed_qr(pdf_path, page_num, error_log_path, "QR kod bulunamadı")
 
     return qr_data_list
 
-def process_qr_data(qr_code):
-    # QR kod içeriği JSON formatında olduğu için json modülü ile ayrıştırıyoruz
-    try:
-        qr_json = json.loads(qr_code)
-    except json.JSONDecodeError:
-        print(f"QR kod ayrıştırılamadı: {qr_code}")
-        return []
-    
-    # Excel'e kaydetmek için satırları hazırlıyoruz
+def clean_json_string(json_string):
+    # Fazladan virgülleri kaldır
+    json_string = json_string.replace(", ,", ",").replace(", }", "}")
+
+    # Son öğede varsa, virgülü kaldır
+    json_string = json_string.rstrip(", ")
+
+    return json_string
+
+def process_qr_data(qr_code, pdf_path, error_log_path):
     rows = []
 
-    # Diğer bilgiler
+    try:
+        # Eğer qr_code bir liste ise, öncelikle listeyi açıp ilk öğeyi almalıyız
+        if isinstance(qr_code, list) and len(qr_code) > 0:
+            qr_code = qr_code[0]
+
+        # demjson3 ile JSON'u ayrıştır ve hataları tolere et
+        qr_json = demjson3.decode(qr_code, strict=False)
+
+    except demjson3.JSONDecodeError as e:
+        # JSON ayrıştırma hatalarını loglayalım
+        with open(error_log_path, 'a') as log_file:
+            log_file.write(f"Hatalı JSON ayrıştırması: {pdf_path}, Hata: {e}\n")
+        print(f"QR kod ayrıştırılamadı: {qr_code}")
+        return []
+
+    except Exception as e:
+        # Diğer hataları da loglayalım
+        with open(error_log_path, 'a') as log_file:
+            log_file.write(f"Diğer hata: {pdf_path}, Hata: {e}\n")
+        print(f"Bir hata oluştu: {e}")
+        return []
+
+    # Genel bilgi alanları
     general_info = {
         "Tarih": qr_json.get("tarih", ""),
         "cari kodu": qr_json.get("vkntckn", ""),
         "cari adı": "",
         "YAZMA BELGE NO": "",
         "FATURA NO": qr_json.get("no", ""),
-        "TUTAR": "",
-        "KDV VERGİ": "",
         "İSKONTO": qr_json.get("iskonto", ""),
         "BELGE TÜRÜ FATURA  1: Z RAPORU 4": "1",
         "EVRAK TİPİ 1 ALIŞ  2 SATIŞ": "1",
@@ -141,73 +177,88 @@ def process_qr_data(qr_code):
         "FATURA CİNSİ 1-TOPTAN 2- PERAKENDE": "1",
         "KDV ORANI": "",
         "NORMAL İADE": "NORMAL",
-        "hareket cinsi 1 STOK 2- HİZMET 3 MASRAF":"1",
-        "hareket kodu":"KAR2",
-        "hareket adı":""
-            # BABS
-        # "Alıcı VKN/TCKN": qr_json.get("avkntckn", ""),
-        # "Senaryo": qr_json.get("senaryo", ""),
-        # "Tip": qr_json.get("tip", ""),
-        # "ETTN": qr_json.get("ettn", ""),
-        # "Para Birimi": qr_json.get("parabirimi", ""),
-        # "Mal/Hizmet Toplam": qr_json.get("malhizmettoplam", ""),
-        # "Vergi Dahil": qr_json.get("vergidahil", ""),
-        # "Ödenecek Tutar": qr_json.get("odenecek", "")
+        "hareket cinsi 1 STOK 2- HİZMET 3 MASRAF": "1",
+        "hareket kodu": "",
+        "hareket adı": ""
     }
 
-    # KDV matrahlarını ve hesaplanan KDV'leri satırlara ayırıyoruz
+    # KDV oranlarını işleyelim, sadece geçerli veriler işlenip Excel'e kaydedilsin
     for i in [1, 10, 20]:
-        kdvmatrah_key = f"kdvmatrah({i})"
-        hesaplanankdv_key = f"hesaplanankdv({i})"
-        
-        if kdvmatrah_key in qr_json and hesaplanankdv_key in qr_json:
-            general_info["TUTAR"] = qr_json[kdvmatrah_key]
-            general_info["KDV VERGİ"] = qr_json[hesaplanankdv_key]
-            general_info["KDV ORANI"] = f"{i/100}%"
-            row = general_info.copy()  # Diğer bilgiler kopyalanıyor
+        kdvmatrah_key_float = f"kdvmatrah({i:.2f})"
+        kdvmatrah_key_int = f"kdvmatrah({i})"
+        hesaplanankdv_key_float = f"hesaplanankdv({i:.2f})"
+        hesaplanankdv_key_int = f"hesaplanankdv({i})"
 
-            rows.append(row)
-    
+        # Hem ondalık hem tam sayı anahtarlarını kontrol edelim
+        kdv_matrah_values = qr_json.get(kdvmatrah_key_float) or qr_json.get(kdvmatrah_key_int)
+        hesaplanan_kdv_values = qr_json.get(hesaplanankdv_key_float) or qr_json.get(hesaplanankdv_key_int)
+
+        # Değerler varsa işleyelim, None olanlar atlanacak
+        if kdv_matrah_values and hesaplanan_kdv_values:
+            # Tek bir değer varsa, onu listeye çeviriyoruz
+            if not isinstance(kdv_matrah_values, list):
+                kdv_matrah_values = [kdv_matrah_values]
+            if not isinstance(hesaplanan_kdv_values, list):
+                hesaplanan_kdv_values = [hesaplanan_kdv_values]
+
+            # Her değeri ayrı bir satır olarak kaydedelim
+            for matrah, kdv in zip(kdv_matrah_values, hesaplanan_kdv_values):
+                if isinstance(matrah, (int, float, str)) and isinstance(kdv, (int, float, str)):
+                    row = general_info.copy()
+                    row["TUTAR"] = matrah
+                    row["KDV VERGİ"] = kdv
+                    row["KDV ORANI"] = f"{i}%"
+                    rows.append(row)
+                else:
+                    # Eğer matrah veya kdv değeri dictionary ise hata loglanır
+                    with open(error_log_path, 'a') as log_file:
+                        log_file.write(f"Hatalı KDV verisi: {pdf_path}, Matrah: {matrah}, KDV: {kdv}\n")
+
     return rows
 
-def namedImageName(qr_code):
-    try:
-        qr_json = json.loads(qr_code)
-    except json.JSONDecodeError:
-        print(f"QR kod ayrıştırılamadı: {qr_code}")
-        return None, None, None
-        
-    return qr_json.get("tarih", ""), qr_json.get("no", ""), qr_json.get("vkntckn", "")
+
+def log_failed_qr(pdf_path, page_num, error_log_path, error_message):
+    with open(error_log_path, 'a') as log_file:
+        if page_num != -1:
+            log_file.write(f"{os.path.basename(pdf_path)} - Sayfa {page_num + 1}: {error_message}\n")
+        else:
+            log_file.write(f"{os.path.basename(pdf_path)}: {error_message}\n")
+    print(f"{error_message}: {os.path.basename(pdf_path)}, Sayfa {page_num + 1}")
+
 
 def process_pdfs(pdf_folder, output_folder, output_excel):
     pdf_files = [f for f in os.listdir(pdf_folder) if f.endswith('.pdf')]
     all_data = []
     success_folder = create_output_folder(output_folder)
+    error_log_path = os.path.join(output_folder, "error-log.txt")
 
     for pdf_file in pdf_files:
         pdf_path = os.path.join(pdf_folder, pdf_file)
         print(f"İşlenen dosya: {pdf_path}")
 
         qr_data_list = extract_qr_from_pdf(pdf_path, output_folder)
+        print('asndlkajdlkasjdl')
+        print(qr_data_list)
         for qr_code in qr_data_list:
-            parsed_rows = process_qr_data(qr_code)
+            # `process_qr_data` fonksiyonunu çağırırken `pdf_path` ve `error_log_path` argümanlarını da geçiyoruz.
+            print(qr_code)
+            parsed_rows = process_qr_data(qr_code, pdf_path, error_log_path)
+            print(parsed_rows)
+
             if parsed_rows:
                 all_data.extend(parsed_rows)
-                tarih, fatura_no, cari_kodu = namedImageName(qr_code)
-                image_file = f"{fatura_no}-{cari_kodu}.png"
-                image_path = os.path.join(success_folder, image_file)
-                pages = convert_from_path(pdf_path, 400)
-                if pages:
-                    pages[0].save(image_path, "PNG")
+                # QR'dan alınan diğer işlemler burada yapılabilir
             else:
                 print(f"{pdf_file} dosyasındaki QR kodu işlenemedi.")
 
+    # Eğer QR kod verisi bulunmuşsa veriyi Excel'e yaz
     if all_data:
         df = pd.DataFrame(all_data)
         df.to_excel(output_excel, index=False)
         print(f"Veriler {output_excel} dosyasına başarıyla yazıldı.")
     else:
         print("Hiç QR kod verisi bulunamadı.")
+
 
 # Uygulamayı başlat
 start_gui()
