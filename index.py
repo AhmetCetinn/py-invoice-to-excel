@@ -161,7 +161,7 @@ def process_qr_data(qr_code, pdf_path, error_log_path):
         "YAZMA BELGE NO": "",
         "FATURA NO": qr_json.get("no", ""),
         "İSKONTO": qr_json.get("iskonto", ""),
-        "BELGE TÜRÜ FATURA  1: Z RAPORU 4": "1",
+        "BELGE TÜRÜ FATURA  1: Z RAPORU 4": "",
         "EVRAK TİPİ 1 ALIŞ  2 SATIŞ": "1",
         "TİCARET TÜRÜ  1 TOPTAN - 2 PERAKENDE": "1",
         "AÇIK KAPALI": "AÇIK",
